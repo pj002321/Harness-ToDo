@@ -1,0 +1,18 @@
+# ci.yaml — 이 파일은 CI 템플릿입니다. 실제 lint/test/build 명령으로 교체하세요.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: 언어별 setup 액션 추가 (예: actions/setup-python, actions/setup-node)
+      - name: smoke test
+        run: ./tests/smoke_test.sh
+      - name: collect metrics
+        run: ./scripts/collect_metrics.sh

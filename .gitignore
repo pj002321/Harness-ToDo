@@ -1,0 +1,12 @@
+# .gitignore — 언어/스택에 따라 채우세요. 아래는 흔한 항목의 최소 시작점입니다.
+logs/*
+!logs/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
+.env
+*.env
+!secrets.example.env
+.venv/
+__pycache__/
+node_modules/
+*.log
