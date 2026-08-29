@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# pre-commit.sample — 이 파일은 pre-commit 훅 예시입니다. .git/hooks/pre-commit으로 복사하고 실제 lint 명령으로 교체하세요.
+# 권장 툴: Python이면 ruff+bandit, JS/TS면 eslint, Go면 golangci-lint 등 스택에 맞는 lint/SAST 도구.
+set -euo pipefail
+echo "stub: no lint command configured" && exit 0
