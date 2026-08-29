@@ -10,3 +10,5 @@ artifacts/*
 __pycache__/
 node_modules/
 *.log
+.serena
+.headroom_wrap_marker.json
