@@ -1,0 +1,13 @@
+{
+  "name": "harness-todo",
+  "private": true,
+  "type": "module",
+  "description": "Planner → Generator ⇄ Evaluator 하네스를 Claude Code headless로 돌려보는 체험용 샘플",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "harness": "node harness/run.js",
+    "solo": "node harness/solo.js",
+    "view": "node viewer/server.js",
+    "test": "node --test"
+  }
+}
