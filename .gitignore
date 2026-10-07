@@ -1,14 +1,8 @@
-# .gitignore — 언어/스택에 따라 채우세요. 아래는 흔한 항목의 최소 시작점입니다.
-logs/*
-!logs/.gitkeep
-artifacts/*
-!artifacts/.gitkeep
-.env
-*.env
-!secrets.example.env
-.venv/
-__pycache__/
+# 실행 기록은 각자 로컬에만. 공유할 녹화본은 runs/demo-* 로 이름 붙여 커밋한다.
+runs/*
+!runs/demo-*/
 node_modules/
+.env
 *.log
 .serena
 .headroom_wrap_marker.json
