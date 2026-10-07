@@ -1,123 +1,106 @@
-// 세 에이전트의 "역할 = 프롬프트 + 권한 + 출력 모양".
-// 프롬프트(태도·기준)는 prompts/*.md, 권한과 출력 모양은 여기서 코드로 강제한다.
+// 세 에이전트의 "역할 = 프롬프트 + 입력 + 출력 모양".
+// 프롬프트(태도·기준)는 prompts/*.md, 입력과 출력 모양과 합격 판정은 여기서 코드로 강제한다.
 import { readFileSync } from 'node:fs';
 import { runAgent } from './claude.js';
-import { startApp } from './app.js';
-import { CONTRACT_SCHEMA } from './contract.js';
-
-export const REQUEST = '할 일 관리(ToDo) 웹 앱을 만들어줘.';
-
-// startApp()이 앱을 띄우는 방식과 맞물린 기술 제약. 프롬프트가 아니라 "환경의 규칙"이다.
-export const APP_RULES = [
-  'Node.js 표준 라이브러리만 사용한다 (npm 의존성 없음, package.json 불필요).',
-  '진입점은 현재 디렉터리의 server.js 하나이고 process.env.PORT 포트를 연다.',
-  'GET / 에서 화면(HTML)을 제공한다. 데이터는 현재 디렉터리 안의 JSON 파일에 저장한다.',
-  '서버를 직접 띄워둔 채로 끝내지 않는다. 확인이 필요하면 띄웠다가 반드시 종료한다.',
-].map((r) => `- ${r}`).join('\n');
-
-// 권한 표 — README의 표와 같은 내용
-export const GENERATOR_TOOLS = { tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'], allow: ['Bash(node *)'], edits: true };
-const EVALUATOR_TOOLS = { tools: ['Read', 'Glob', 'Grep', 'Bash'], allow: ['Bash(curl *)'] }; // Write/Edit 없음 → 코드를 못 고친다
-const PLANNER_TOOLS = { tools: [] }; // 생각만 한다
+import { BRIEF_SCHEMA } from './contract.js';
 
 const prompt = (name) => readFileSync(new URL(`../prompts/${name}.md`, import.meta.url), 'utf8');
 const str = { type: 'string' };
+const arr = (items) => ({ type: 'array', items });
 const obj = (properties) => ({ type: 'object', properties, required: Object.keys(properties) });
 
-const SPEC_SCHEMA = obj({
-  product: str,
-  overview: str,
-  sprints: { type: 'array', items: obj({ title: str, goal: str, features: { type: 'array', items: str } }) },
-});
-const REVIEW_SCHEMA = obj({ approved: { type: 'boolean' }, comments: str, contract: CONTRACT_SCHEMA });
-export const REPORT_SCHEMA = obj({ summary: str, done: { type: 'boolean' } });
-const VERDICT_SCHEMA = obj({
-  results: { type: 'array', items: obj({ id: str, pass: { type: 'boolean' }, evidence: str }) },
-  summary: str,
+// 요약은 최대 3문장 — 원문을 대신하지 않고 원문으로 보내는 미리보기여야 한다 (저작권). 발행할 때 한 번 더 자른다.
+export const MAX_SENTENCES = 3;
+export const DRAFT_SCHEMA = obj({ headline: str, sentences: { ...arr(str), maxItems: MAX_SENTENCES } });
+const CHECK_SCHEMA = obj({
+  sentences: arr(obj({ n: { type: 'integer' }, supported: { type: 'boolean' }, quote: str, reason: str })),
+  unmet: arr(str),
 });
 
-// ── markdown 렌더링 (사람과 다음 에이전트가 읽을 파일) ──────────────────
-const specMd = (s) =>
-  `# ${s.product}\n\n${s.overview}\n\n` +
-  s.sprints.map((sp, i) => `## Sprint ${i + 1}: ${sp.title}\n${sp.goal}\n${sp.features.map((f) => `- ${f}`).join('\n')}`).join('\n\n');
-export const contractMd = (c) =>
-  c.criteria.map(({ id, ...rest }) => `- **${id}**\n` + Object.entries(rest).map(([k, v]) => `  - ${k}: ${v}`).join('\n')).join('\n');
+// 기사 원문은 신뢰할 수 없는 입력 — 태그로 감싸 "지시가 아니라 데이터"임을 표시한다
+export const source = (a) => `<article id="${a.id}">\n# ${a.title}\n${a.text}\n</article>`;
+const candidates = (articles) => articles.map((a) => `- [${a.id}] ${a.title} (${a.source})\n  ${a.text.slice(0, 300)}…`).join('\n');
+const fields = (o) => Object.entries(o).filter(([k]) => k !== 'id').map(([k, v]) => `- ${k}: ${[].concat(v).join(' / ')}`).join('\n') || '(없음 — 근거만 검사)';
+const draftMd = (d) => `# ${d.headline}\n\n${d.sentences.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 const verdictMd = (v) =>
-  `# ${v.pass ? 'PASS' : 'FAIL'}\n\n${v.summary}\n\n` +
-  v.results.map((r) => `- ${r.pass ? '✅' : '❌'} **${r.id}** — ${r.evidence}`).join('\n');
+  `# ${v.pass ? 'PASS' : 'FAIL'}\n\n` +
+  v.results.map((r) => `${r.ok ? '✅' : '❌'} ${r.n}. ${r.sentence}\n   ↳ ${r.ok ? `"${r.quote}"` : r.reason}`).join('\n') +
+  (v.unmet.length ? `\n\n## 계약 미충족\n${v.unmet.map((u) => `- ${u}`).join('\n')}` : '');
 
-export function save(run, role, rel, md) {
-  run.save(rel, md);
+function save(run, role, rel, content) {
+  run.save(rel, content);
   run.event({ type: 'artifact', role, file: rel });
 }
 
+// 인용이 원문에 실제로 있는가 — Checker의 말을 믿지 않고 코드로 대조한다.
+export const norm = (s) => s.toLowerCase().replace(/[\s"'“”‘’]+/g, ' ').trim();
+export const grounded = (quote, text) => norm(quote).length >= 15 && norm(text).includes(norm(quote));
+
 // ── 에이전트 ────────────────────────────────────────────────────────────
-export async function plan(run) {
-  const { output: spec } = await runAgent({
-    run, role: 'planner', step: '스펙 작성', system: prompt('planner'), ...PLANNER_TOOLS, schema: SPEC_SCHEMA,
-    prompt: `사용자 요청: ${REQUEST}\n\n환경 제약:\n${APP_RULES}`,
+// articles: 한 분야의 후보들
+export async function edit(run, { category, articles }) {
+  const { output } = await runAgent({
+    run, role: 'editor', step: `${category} 기사 선정`, system: prompt('editor'), schema: BRIEF_SCHEMA,
+    prompt: `분야: ${category}\n\n오늘의 후보 기사 ${articles.length}개:\n${candidates(articles)}`,
   });
-  save(run, 'planner', 'spec.md', specMd(spec));
-  return spec;
+  const ids = new Set(articles.map((a) => a.id));
+  const picks = output.picks.filter((p) => ids.has(p.id)); // 후보에 없는 id를 지어낸 선정은 버린다
+  save(run, 'editor', `brief-${category}.md`, picks.map((p) => `## ${p.id} ${articles.find((a) => a.id === p.id).title}\n${fields(p)}`).join('\n\n'));
+  return picks;
 }
 
-export async function proposeContract(run, { spec, n }) {
-  const sprint = spec.sprints[n - 1];
-  const { output: contract } = await runAgent({
-    run, role: 'generator', step: `Sprint ${n} 계약 제안`, system: prompt('generator'), tools: [], schema: CONTRACT_SCHEMA,
-    prompt: `${specMd(spec)}\n\n---\n이번은 Sprint ${n}: ${sprint.title} 이다. 이 스프린트의 완료 기준(Sprint Contract)을 제안하라.`,
-  });
-  save(run, 'generator', `sprint-${n}/contract-proposal.md`, contractMd(contract));
-  return contract;
-}
-
-export async function reviewContract(run, { spec, n, contract }) {
-  const { output: review } = await runAgent({
-    run, role: 'evaluator', step: `Sprint ${n} 계약 검토`, system: prompt('evaluator'), tools: [], schema: REVIEW_SCHEMA,
+export async function write(run, { article, pick, attempt = 1, feedback }) {
+  const { output: draft } = await runAgent({
+    run, role: 'writer', step: `${article.id} 요약 #${attempt}`, system: prompt('writer'), schema: DRAFT_SCHEMA,
     prompt:
-      `${specMd(spec)}\n\n---\nGenerator가 Sprint ${n} 계약을 제안했다:\n${contractMd(contract)}\n\n` +
-      `curl로 검증 가능한지, 스펙 대비 빠진 것은 없는지 검토하라. 승인하지 않으면 고친 계약을 contract에 담아라.`,
+      `${source(article)}\n\n---\nEditor의 브리프:\n${fields(pick)}` +
+      (feedback ? `\n\n---\n직전 초안에 대한 Checker 판정:\n${verdictMd(feedback)}\n실패한 문장을 고치거나 빼라.` : ''),
   });
-  save(run, 'evaluator', `sprint-${n}/contract-review.md`, `# ${review.approved ? '승인' : '수정 요청'}\n\n${review.comments}\n\n${contractMd(review.contract)}`);
-  return review;
+  save(run, 'writer', `${article.id}/draft-${attempt}.md`, draftMd(draft));
+  return draft;
 }
 
-export async function generate(run, { spec, n, attempt, contract, feedback }) {
-  const { output: report } = await runAgent({
-    run, role: 'generator', step: `Sprint ${n} 구현 #${attempt}`, system: prompt('generator'), ...GENERATOR_TOOLS, cwd: run.appDir, schema: REPORT_SCHEMA,
+// tag: 저장 위치 겸 화면 표시용 이름 (예: 'abc123/check-2', 'audit/abc123')
+export async function check(run, { article, pick = {}, draft, tag }) {
+  const { output: v } = await runAgent({
+    run, role: 'checker', step: `${tag} 검수`, system: prompt('checker'), schema: CHECK_SCHEMA,
     prompt:
-      `${specMd(spec)}\n\n환경 제약:\n${APP_RULES}\n\n---\nSprint ${n}을 구현하라. 합의된 계약:\n${contractMd(contract)}` +
-      (feedback ? `\n\n---\n직전 시도에 대한 Evaluator 판정:\n${verdictMd(feedback)}\n실패 항목을 고쳐라.` : ''),
+      `${source(article)}\n\n---\n계약:\n${fields(pick)}\n\n---\n검수할 요약:\n${draftMd(draft)}\n\n` +
+      `문장마다 n(번호), 근거 여부, 근거가 되는 원문 구절(quote, 원문 그대로)을 내라. 지키지 못한 계약 항목은 unmet에 적어라.`,
   });
-  save(run, 'generator', `sprint-${n}/attempt-${attempt}/report.md`, `# 자기 보고: ${report.done ? '완료했다고 주장' : '미완료'}\n\n${report.summary}`);
-  return report;
-}
-
-// tag: 저장 위치 겸 화면 표시용 이름 (예: 'sprint-1/attempt-2', 'acceptance')
-export async function evaluate(run, { tag, contract }) {
-  const app = await startApp(run.appDir);
-  let verdict;
-  if (app.error) {
-    // 서버가 안 뜨면 LLM에게 물어볼 것도 없다 — 하네스가 바로 전부 실패 처리
-    verdict = { summary: `앱 기동 실패: ${app.error}`, results: contract.criteria.map((c) => ({ id: c.id, pass: false, evidence: '앱이 뜨지 않음' })) };
-  } else {
-    try {
-      ({ output: verdict } = await runAgent({
-        run, role: 'evaluator', step: `${tag} 검증`, system: prompt('evaluator'), ...EVALUATOR_TOOLS, cwd: run.appDir, schema: VERDICT_SCHEMA,
-        prompt: `앱이 ${app.url} 에서 실행 중이다. 아래 계약의 모든 항목을 실제로 호출해서 검증하라:\n${contractMd(contract)}`,
-      }));
-    } finally {
-      app.stop();
-    }
-  }
-  // 최종 합격은 LLM의 말이 아니라 하네스가 계산한다: 계약의 모든 id가 pass여야 한다.
-  const passed = new Set(verdict.results.filter((r) => r.pass).map((r) => r.id));
-  const failed = contract.criteria.map((c) => c.id).filter((id) => !passed.has(id));
-  verdict.pass = failed.length === 0;
-  save(run, 'evaluator', `${tag}/verdict.md`, verdictMd(verdict));
-  run.event({ type: 'verdict', tag, pass: verdict.pass, failed, total: contract.criteria.length });
+  // 최종 합격은 LLM의 말이 아니라 하네스가 계산한다:
+  // 모든 문장에 판정이 있고, supported이며, 그 인용이 원문에 실제로 있어야 한다.
+  const results = draft.sentences.map((sentence, i) => {
+    const r = v.sentences.find((x) => x.n === i + 1);
+    const ok = !!r?.supported && grounded(r.quote, article.text);
+    const reason = !r ? '검수 누락' : r.supported && !ok ? `인용이 원문에 없음: "${r.quote}"` : r.reason;
+    return { n: i + 1, sentence, ok, quote: r?.quote ?? '', reason };
+  });
+  const verdict = { results, unmet: v.unmet, pass: results.every((r) => r.ok) && v.unmet.length === 0 };
+  save(run, 'checker', `${tag}.md`, verdictMd(verdict));
+  run.event({
+    type: 'verdict', tag, pass: verdict.pass, total: results.length,
+    failed: [...results.filter((r) => !r.ok).map((r) => `문장 ${r.n}`), ...v.unmet],
+  });
   return verdict;
 }
 
-// 비교용 최종 심사: solo와 harness 결과물을 같은 숨겨진 기준으로 채점한다.
-export const ACCEPTANCE = JSON.parse(readFileSync(new URL('./acceptance.json', import.meta.url), 'utf8'));
+// 발행. solo와 harness가 똑같이 거친다. items = [{ article, draft, verified }]
+// AUDIT=1 이면 발행 전에 감사: 계약 없이 "근거 없는 문장"만 세는 독립 검수.
+// solo와 harness를 같은 잣대로 비교할 때만 켠다 (호출 수가 기사 수만큼 는다).
+export async function finish(run, items) {
+  const audit = process.env.AUDIT ? { sentences: 0, unsupported: 0 } : null;
+  for (const it of audit ? items : []) {
+    const v = await check(run, { article: it.article, draft: it.draft, tag: `audit/${it.article.id}` });
+    audit.sentences += v.results.length;
+    audit.unsupported += v.results.filter((r) => !r.ok).length;
+  }
+  // 공개되는 것은 제목·요약·링크·썸네일 주소뿐. 기사 본문(text)은 싣지 않는다.
+  const digest = items.map(({ article: { text, ...a }, draft, verified }) => ({
+    ...a, headline: draft.headline, sentences: draft.sentences.slice(0, MAX_SENTENCES), verified,
+  }));
+  save(run, 'harness', 'digest.json', JSON.stringify(digest, null, 2));
+  run.event({ type: 'done', published: digest.length, ...audit });
+  console.log(`발행 ${digest.length}건${audit ? ` · 근거 없는 문장 ${audit.unsupported}/${audit.sentences}` : ''}`);
+  console.log(`→ npm run view 후 http://localhost:4400/?run=${run.id}`);
+}

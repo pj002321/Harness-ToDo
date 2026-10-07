@@ -9,12 +9,12 @@ export const RUNS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'run
 export function createRun(mode, request) {
   const id = `${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}-${mode}`;
   const dir = join(RUNS_DIR, id);
-  mkdirSync(join(dir, 'app'), { recursive: true });
+  mkdirSync(dir, { recursive: true });
 
   const run = {
     id,
     dir,
-    appDir: join(dir, 'app'),
+    mode,
     event(e) {
       appendFileSync(join(dir, 'events.jsonl'), JSON.stringify({ t: Date.now(), ...e }) + '\n');
     },

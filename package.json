@@ -2,10 +2,11 @@
   "name": "harness-todo",
   "private": true,
   "type": "module",
-  "description": "Planner → Generator ⇄ Evaluator 하네스를 Claude Code headless로 돌려보는 체험용 샘플",
+  "description": "시사·경제·AI·문화 뉴스를 매일 골라 요약하고, 문장마다 원문 근거를 검증하는 Claude Code 하네스",
   "engines": { "node": ">=20" },
   "scripts": {
     "harness": "node harness/run.js",
+    "start": "node viewer/server.js",
     "solo": "node harness/solo.js",
     "view": "node viewer/server.js",
     "test": "node --test"
