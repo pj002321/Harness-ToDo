@@ -1,8 +1,0 @@
-# prometheus.yml — 이 파일은 Prometheus 스크레이프 설정 샘플입니다. 실제 서비스 타겟으로 교체하세요.
-global:
-  scrape_interval: 15s
-
-scrape_configs:
-  - job_name: "sample_app"
-    static_configs:
-      - targets: ["localhost:8000"] # TODO: 실제 앱의 host:port로 교체
