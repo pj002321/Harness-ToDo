@@ -1,6 +1,7 @@
-# 실행 기록은 각자 로컬에만. 공유할 녹화본은 runs/demo-* 로 이름 붙여 커밋한다.
+# 실행 기록·수집한 기사 원문은 각자 로컬에만 (원문 저작권). 공유할 녹화본은 runs/demo-* 로 이름 붙여 커밋한다.
 runs/*
 !runs/demo-*/
+sources/
 node_modules/
 .env
 *.log
